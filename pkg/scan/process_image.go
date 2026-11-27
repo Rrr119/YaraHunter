@@ -3,19 +3,15 @@ package scan
 import (
 	"bytes"
 	"errors"
-	"fmt"
 	"io"
 	"math"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"syscall"
-	"unsafe"
 
 	"github.com/gabriel-vasile/mimetype"
 
 	"github.com/deepfence/YaraHunter/pkg/output"
-	yr "github.com/hillu/go-yara/v4"
 	"github.com/rs/zerolog/log"
 )
 
@@ -116,156 +112,33 @@ func isExecutable(path string) bool {
 	return fileMimetypeCheck(path, execMimeTypes)
 }
 
-func BytesToString(b []byte) (s string) {
-	return unsafe.String(unsafe.SliceData(b), len(b))
-}
-
-type Iterator struct {
-	blocksize int
-	rs        io.ReadSeeker
-	offset    int64
-	length    int
-}
-
-func (s *Iterator) read(buf []byte) {
-	_, _ = s.rs.Seek(s.offset, io.SeekStart)
-	_, _ = s.rs.Read(buf)
-}
-
-func (s *Iterator) First() *yr.MemoryBlock {
-	s.offset = 0
-	return &yr.MemoryBlock{
-		Base:      uint64(s.offset),
-		Size:      uint64(s.length),
-		FetchData: s.read,
-	}
-}
-
-func (s *Iterator) Next() *yr.MemoryBlock {
-	s.offset += int64(s.length)
-	end, _ := s.rs.Seek(0, io.SeekEnd)
-	s.length = int(end - s.offset)
-	if s.length <= 0 {
-		return nil
-	}
-	if s.length > s.blocksize {
-		s.length = s.blocksize
-	}
-	return &yr.MemoryBlock{
-		Base:      uint64(s.offset),
-		Size:      uint64(s.length),
-		FetchData: s.read,
-	}
-}
-
+// ScanFile scans a single file through the scanner's engine. It is kept as a
+// compatibility wrapper for callers that scan files directly.
 func ScanFile(s *Scanner, fileName string, f io.ReadSeeker, fsize int, iocs *[]output.IOCFound, layer string) error {
 	log.Debug().Str("file", fileName).Msg("Scanning file")
-	var (
-		matches yr.MatchRules
-		err     error
-	)
-
-	type ruleVariable struct {
-		name  string
-		value interface{}
-	}
 	*iocs = (*iocs)[:0]
-
-	variables := []ruleVariable{
-		{"filename", filepath.ToSlash(filepath.Base(fileName))},
-		{"filepath", filepath.ToSlash(fileName)},
-		{"extension", filepath.Ext(fileName)},
-	}
-
-	yrScanner := s.YaraScanner
-	yrScanner.SetCallback(&matches)
-	for _, v := range variables {
-		if v.value != nil {
-			if err = yrScanner.DefineVariable(v.name, v.value); err != nil {
-				return err
-			}
+	if s.Engine == nil {
+		if s.YaraScanner == nil {
+			return errors.New("scan engine is not initialized")
 		}
+		s.Engine = NewLegacyEngine(s.YaraScanner)
 	}
-
-	if s.hostMountPath != "" {
-		fileName = strings.TrimPrefix(fileName, s.hostMountPath)
-	}
-
-	it := Iterator{blocksize: 32 * 1024 * 1024, rs: f}
-	err = yrScanner.ScanMemBlocks(&it)
+	reader, size, cleanup, err := readerAtFromReadSeeker(f, int64(fsize))
 	if err != nil {
 		return err
 	}
+	defer cleanup()
 
-	totalMatches := 0
-	iocsFound := make([]output.IOCFound, 0, len(matches))
-	for _, m := range matches {
-		matches := []output.StringMatch{}
-		for _, str := range m.Strings {
-			matches = append(matches, output.StringMatch{
-				Offset: int(str.Base) + int(str.Offset),
-				Data:   BytesToString(str.Data),
-			})
-		}
-		totalMatches += len(m.Strings)
-
-		matchesMetaData := make([]string, len(m.Metas))
-		for _, strMeta := range m.Metas {
-			matchesMetaData = append(matchesMetaData, fmt.Sprintf("%v : %v \n", strMeta.Identifier, strMeta.Value))
-		}
-
-		iocsFound = append(iocsFound, output.IOCFound{
-			RuleName:         m.Rule,
-			CategoryName:     m.Tags,
-			Meta:             matchesMetaData,
-			CompleteFilename: fileName,
-			Matches:          matches,
-		})
+	displayName := fileName
+	if s.hostMountPath != "" {
+		displayName = strings.TrimPrefix(displayName, s.hostMountPath)
 	}
-	updatedSeverity, updatedScore := calculateSeverity(totalMatches, "low", 0)
-	if len(matches) > 0 {
-		for _, m := range iocsFound {
-			m.FileSeverity = updatedSeverity
-			m.FileSevScore = updatedScore
-			StringsMatch := make([]string, 0)
-			for _, c := range m.StringsToMatch {
-				if len(c) > 0 {
-					StringsMatch = append(StringsMatch, c)
-				}
-			}
-			m.StringsToMatch = StringsMatch
-			m.LayerID = layer
-			summary := ""
-			class := "Undefined"
-			m.MetaRules = make(map[string]string)
-			for _, c := range m.Meta {
-				var metaSplit = strings.Split(c, " = ")
-				if len(metaSplit) > 1 {
-
-					m.MetaRules[metaSplit[0]] = strings.ReplaceAll(metaSplit[1], "\n", "")
-					if metaSplit[0] == "description" {
-						str := []string{"The file has a rule match that ", strings.ReplaceAll(metaSplit[1], "\n", "") + "."}
-						summary += strings.Join(str, " ")
-					} else if metaSplit[0] == "sev" {
-						// If severity is present in the rule, set that
-						m.FileSeverity = strings.TrimSpace(strings.ReplaceAll(metaSplit[1], "\n", ""))
-						m.FileSevScore = getSeverityScore(m.FileSeverity)
-					} else {
-						if metaSplit[0] == "info" {
-							class = strings.TrimSpace(strings.ReplaceAll(metaSplit[1], "\n", ""))
-						} else if len(metaSplit[0]) > 0 {
-							str := []string{"The matched rule file's ", metaSplit[0], " is", strings.ReplaceAll(metaSplit[1], "\n", "") + "."}
-							summary += strings.Join(str, " ")
-						}
-					}
-				}
-			}
-			m.Summary = summary
-			m.Class = class
-			*iocs = append(*iocs, m)
-		}
+	found, err := s.Engine.ScanReader(fileName, displayName, reader, size, layer)
+	if err != nil {
+		return err
 	}
-	return err
+	*iocs = append(*iocs, found...)
+	return nil
 }
 
 // Execute the specified command and return the output

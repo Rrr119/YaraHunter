@@ -104,6 +104,11 @@ func main() {
 		FailOnLowCount:       *opts.FailOnLowCount,
 		FailOnCount:          *opts.FailOnCount,
 		InactiveThreshold:    *opts.InactiveThreshold,
+		RuleShards:           *opts.RuleShards,
+		WorkersPerScan:       *opts.WorkersPerScan,
+		Prefilter:            *opts.Prefilter,
+		PrefilterShadow:      *opts.PrefilterShadow,
+		EnableEntropyFilter:  *opts.EnableEntropyFilter,
 	}
 
 	// Download rules if updater is enabled and in CLI mode

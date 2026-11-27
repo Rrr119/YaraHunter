@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"regexp"
+	"runtime"
 	"sync"
 	"time"
 
@@ -44,10 +45,21 @@ type GRPCScannerServer struct {
 	InactiveThreshold         int
 	ExtractorConfig           cfg.Config
 	YaraRules                 *yararules.YaraRules
+	ShardSet                  *yararules.ShardSet
+	ScanOptions               ScanOptions
 	pluginName                string
 	pb.UnimplementedAgentPluginServer
 	pb.UnimplementedScannersServer
 	ScanMap sync.Map
+}
+
+// ScanOptions controls optional parallel scanning in long-lived server mode.
+type ScanOptions struct {
+	RuleShards          int
+	WorkersPerScan      int
+	Prefilter           bool
+	PrefilterShadow     bool
+	EnableEntropyFilter bool
 }
 
 type MalwareRPCServer struct {
@@ -98,9 +110,20 @@ func (s *GRPCScannerServer) GetUID(context.Context, *pb.Empty) (*pb.Uid, error) 
 }
 
 func (s *MalwareRPCServer) FindMalwareInfo(c context.Context, r *pb.MalwareRequest) (*pb.MalwareResult, error) {
-	yaraScanner, err := s.YaraRules.NewScanner()
-	if err != nil {
-		return &pb.MalwareResult{}, err
+	var engine *scan.Engine
+	if s.ShardSet != nil {
+		engine = scan.NewShardEngine(s.ShardSet, scan.EngineOptions{
+			Workers:       s.ScanOptions.WorkersPerScan,
+			Shadow:        s.ScanOptions.PrefilterShadow,
+			Prefilter:     s.ScanOptions.Prefilter,
+			EnableEntropy: s.ScanOptions.EnableEntropyFilter,
+		})
+	} else {
+		yaraScanner, err := s.YaraRules.NewScanner()
+		if err != nil {
+			return &pb.MalwareResult{}, err
+		}
+		engine = scan.NewLegacyEngine(yaraScanner)
 	}
 
 	go func() {
@@ -120,7 +143,7 @@ func (s *MalwareRPCServer) FindMalwareInfo(c context.Context, r *pb.MalwareReque
 			path = r.GetPath()
 		}
 
-		DoScan(
+		DoScanWithEngine(
 			r.ScanId,
 			s.HostMountPath,
 			s.ExtractorConfig,
@@ -130,7 +153,7 @@ func (s *MalwareRPCServer) FindMalwareInfo(c context.Context, r *pb.MalwareReque
 			path,
 			image,
 			container,
-			yaraScanner,
+			engine,
 			func(res output.IOCFound, scanID string) {
 				output.WriteScanData([]*pb.MalwareInfo{output.MalwaresToMalwareInfo(res)}, scanID)
 			},
@@ -148,11 +171,36 @@ func DoScan(
 	namespace,
 	path, image, container string,
 	yaraScanner *yara.Scanner, writeToFile func(res output.IOCFound, scanID string)) {
+	DoScanWithEngine(
+		scanID,
+		hostMountPath,
+		ExtractorConfig,
+		inactiveThreshold,
+		ScanMap,
+		namespace,
+		path,
+		image,
+		container,
+		scan.NewLegacyEngine(yaraScanner),
+		writeToFile,
+	)
+}
+
+// DoScanWithEngine runs a scan using the supplied engine.
+func DoScanWithEngine(
+	scanID string,
+	hostMountPath string,
+	ExtractorConfig cfg.Config,
+	inactiveThreshold int,
+	ScanMap *sync.Map,
+	namespace,
+	path, image, container string,
+	engine *scan.Engine, writeToFile func(res output.IOCFound, scanID string)) {
 
 	jobs.StartScanJob()
 	defer jobs.StopScanJob()
 
-	scanner := scan.New(hostMountPath, ExtractorConfig, yaraScanner, scanID)
+	scanner := scan.NewWithEngine(hostMountPath, ExtractorConfig, engine, scanID)
 	res, ctx := tasks.StartStatusReporter(
 		scanID,
 		func(status tasks.ScanStatus) error {
@@ -198,11 +246,34 @@ func NewGRPCScannerServer(
 	InactiveThreshold int,
 	failOnCompileWarning bool,
 	config cfg.Config, pluginName string,
+	options ...ScanOptions,
 ) (*GRPCScannerServer, error) {
+	scanOpts := ScanOptions{
+		RuleShards:          1,
+		WorkersPerScan:      runtime.NumCPU(),
+		Prefilter:           true,
+		EnableEntropyFilter: true,
+	}
+	if len(options) > 0 {
+		scanOpts = options[0]
+		if scanOpts.WorkersPerScan <= 0 {
+			scanOpts.WorkersPerScan = runtime.NumCPU()
+		}
+	}
 	yaraRules := yararules.New(rulesPath)
-	err := yaraRules.Compile(constants.Filescan, failOnCompileWarning)
-	if err != nil {
-		return nil, err
+	var shardSet *yararules.ShardSet
+	if scanOpts.RuleShards > 1 {
+		set, err := yaraRules.CompileShards(scanOpts.RuleShards, failOnCompileWarning)
+		if err == nil {
+			shardSet = set
+		} else {
+			log.Warn().Err(err).Msg("rule sharding failed, falling back to the legacy single ruleset scanner")
+		}
+	}
+	if shardSet == nil {
+		if err := yaraRules.Compile(constants.Filescan, failOnCompileWarning); err != nil {
+			return nil, err
+		}
 	}
 	res := &GRPCScannerServer{
 		HostMountPath:                  hostMoundPath,
@@ -210,6 +281,8 @@ func NewGRPCScannerServer(
 		InactiveThreshold:              InactiveThreshold,
 		ExtractorConfig:                config,
 		YaraRules:                      yaraRules,
+		ShardSet:                       shardSet,
+		ScanOptions:                    scanOpts,
 		pluginName:                     pluginName,
 		UnimplementedAgentPluginServer: pb.UnimplementedAgentPluginServer{},
 		UnimplementedScannersServer:    pb.UnimplementedScannersServer{},

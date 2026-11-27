@@ -3,6 +3,7 @@ package config
 import (
 	"flag"
 	"os"
+	"runtime"
 )
 
 const (
@@ -37,9 +38,14 @@ type Options struct {
 	FailOnLowCount       *int
 	EnableUpdater        *bool
 	LogLevel             *string
+	RuleShards           *int
+	Prefilter            *bool
+	PrefilterShadow      *bool
+	EnableEntropyFilter  *bool
 }
 
 func ParseOptions() (*Options, error) {
+	defaultWorkers := runtime.NumCPU()
 	options := &Options{
 		LogLevel:             flag.String("log-level", "info", "Log levels are one of error, warn, info, debug. Only levels higher than the log-level are displayed"),
 		RulesPath:            flag.String("rules-path", "/home/deepfence/usr", "All .yar and .yara files in the given directory will be compiled"),
@@ -56,7 +62,7 @@ func ParseOptions() (*Options, error) {
 		ContainerID:          flag.String("container-id", "", "Id of existing container ID"),
 		ContainerNS:          flag.String("container-ns", "", "Namespace of existing container to scan, empty for docker runtime"),
 		SocketPath:           flag.String("socket-path", "", "The gRPC server unix socket path"),
-		WorkersPerScan:       flag.Int("workers-per-scan", 1, "Number of concurrent workers per scan"),
+		WorkersPerScan:       flag.Int("workers-per-scan", defaultWorkers, "Number of files scanned concurrently (default number of logical CPUs)"),
 		InactiveThreshold:    flag.Int("inactive-threshold", 600, "Threshold for Inactive scan in seconds"),
 		OutFormat:            flag.String("output", TableOutput, "Output format: json or table"),
 		ConsoleURL:           flag.String("console-url", "", "Deepfence Management Console URL"),
@@ -67,6 +73,10 @@ func ParseOptions() (*Options, error) {
 		FailOnMediumCount:    flag.Int("fail-on-medium-count", -1, "Exit with status 1 if number of medium malwares found is >= this value (Default: -1)"),
 		FailOnLowCount:       flag.Int("fail-on-low-count", -1, "Exit with status 1 if number of low malwares found is >= this value (Default: -1)"),
 		EnableUpdater:        flag.Bool("enable-updater", false, "Download rules at runtime if not present (Default: false)"),
+		RuleShards:           flag.Int("rule-shards", 4, "Number of parallel YARA rule groups; 1 disables rule grouping"),
+		Prefilter:            flag.Bool("prefilter", true, "Skip rule groups that cannot match a file based on file header, size and entropy"),
+		PrefilterShadow:      flag.Bool("prefilter-shadow-mode", false, "Run every rule group but record what the prefilter would have skipped, for result diffing"),
+		EnableEntropyFilter:  flag.Bool("enable-entropy-filter", true, "Apply rule-declared math.entropy constraints during prefiltering (safe; disable to make entropy gates fail open)"),
 	}
 	flag.Parse()
 	return options, nil
@@ -83,6 +93,11 @@ func NewDefaultOptions() *Options {
 	var emptyValue = ""
 	var maxIOC = uint(1000)
 	var inactiveThreshold = 600
+	var ruleShards = 4
+	var prefilterEnabled = true
+	var prefilterShadow = false
+	var enableEntropyFilter = true
+	var workersPerScan = runtime.NumCPU()
 	return &Options{
 		RulesPath:            &rulePath,
 		FailOnCompileWarning: &failOnCompileWarning,
@@ -99,5 +114,10 @@ func NewDefaultOptions() *Options {
 		ContainerID:          &emptyValue,
 		ContainerNS:          &emptyValue,
 		SocketPath:           &emptyValue,
+		WorkersPerScan:       &workersPerScan,
+		RuleShards:           &ruleShards,
+		Prefilter:            &prefilterEnabled,
+		PrefilterShadow:      &prefilterShadow,
+		EnableEntropyFilter:  &enableEntropyFilter,
 	}
 }

@@ -32,6 +32,11 @@ type RunnerOptions struct {
 	OutFormat                                                       string
 	FailOnHighCount, FailOnMediumCount, FailOnLowCount, FailOnCount int
 	InactiveThreshold                                               int
+	RuleShards                                                      int
+	WorkersPerScan                                                  int
+	Prefilter                                                       bool
+	PrefilterShadow                                                 bool
+	EnableEntropyFilter                                             bool
 }
 
 func StartYaraHunter[T any](ctx context.Context,
@@ -51,6 +56,13 @@ func StartYaraHunter[T any](ctx context.Context,
 		opts.RulesPath,
 		opts.InactiveThreshold,
 		opts.FailOnCompileWarning, config, constants.PluginName,
+		server.ScanOptions{
+			RuleShards:          opts.RuleShards,
+			WorkersPerScan:      opts.WorkersPerScan,
+			Prefilter:           opts.Prefilter,
+			PrefilterShadow:     opts.PrefilterShadow,
+			EnableEntropyFilter: opts.EnableEntropyFilter,
+		},
 	)
 	if err != nil {
 		log.Fatal().Err(err).Msg("Cannot init grpc")
@@ -75,19 +87,13 @@ func runOnce(ctx context.Context, opts RunnerOptions, extractorConfig cfg.Config
 	var results IOCWriter
 
 	yaraRules := yararules.New(opts.RulesPath)
-	err := yaraRules.Compile(constants.Filescan, opts.FailOnCompileWarning)
+	engine, err := buildScanner(yaraRules, opts)
 	if err != nil {
-		log.Error().Err(err).Msg("error in runOnce compiling yara rules")
+		log.Error().Err(err).Msg("error in runOnce creating scan engine")
 		return
 	}
 
-	yaraScanner, err := yaraRules.NewScanner()
-	if err != nil {
-		log.Error().Err(err).Msg("error in runOnce creating yara scanner")
-		return
-	}
-
-	scanner := scan.New(opts.HostMountPath, extractorConfig, yaraScanner, "")
+	scanner := scan.NewWithEngine(opts.HostMountPath, extractorConfig, engine, "")
 
 	outputs := []output.IOCFound{}
 	writeToArray := func(res output.IOCFound, scanID string) {
@@ -176,4 +182,34 @@ func runOnce(ctx context.Context, opts RunnerOptions, extractorConfig cfg.Config
 
 	output.FailOn(counts,
 		opts.FailOnHighCount, opts.FailOnMediumCount, opts.FailOnLowCount, opts.FailOnCount)
+}
+
+func buildScanner(yaraRules *yararules.YaraRules, opts RunnerOptions) (*scan.Engine, error) {
+	if opts.RuleShards > 1 {
+		shards, err := yaraRules.CompileShards(opts.RuleShards, opts.FailOnCompileWarning)
+		if err == nil {
+			log.Info().
+				Int("rule_shards", opts.RuleShards).
+				Int("scan_workers", opts.WorkersPerScan).
+				Bool("prefilter", opts.Prefilter).
+				Bool("entropy_filter", opts.EnableEntropyFilter).
+				Msg("parallel rule shard engine enabled")
+			return scan.NewShardEngine(shards, scan.EngineOptions{
+				Workers:       opts.WorkersPerScan,
+				Shadow:        opts.PrefilterShadow,
+				Prefilter:     opts.Prefilter,
+				EnableEntropy: opts.EnableEntropyFilter,
+			}), nil
+		}
+		log.Warn().Err(err).Msg("rule sharding failed, falling back to the legacy single ruleset scanner")
+	}
+
+	if err := yaraRules.Compile(constants.Filescan, opts.FailOnCompileWarning); err != nil {
+		return nil, err
+	}
+	yaraScanner, err := yaraRules.NewScanner()
+	if err != nil {
+		return nil, err
+	}
+	return scan.NewLegacyEngine(yaraScanner), nil
 }

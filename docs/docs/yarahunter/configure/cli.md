@@ -44,6 +44,11 @@ YaraHunter applies YARA rules from the local container filesystem; all `*.yar` a
 
  * `--fail-on-rule-compile-warn`: YaraHunter will fail if a yara rule compilation has warnings; otherwise, rules that fail to compile are just ignored
  * `--rules-path string`: all .yar and .yara files in the given local directory will be compiled (default "/home/deepfence/rules")
+ * `--rule-shards int`: number of parallel YARA rule groups (default 4); `1` disables grouping and uses the legacy single ruleset
+ * `--workers-per-scan int`: number of files scanned concurrently (default number of logical CPUs)
+ * `--prefilter`: skip rule groups that cannot match based on their necessary file-header, size, and `math.entropy` constraints (default true)
+ * `--prefilter-shadow-mode`: run every rule group but report which groups the prefilter would have skipped, for result diffing
+ * `--enable-entropy-filter`: apply rule-declared `math.entropy(0, filesize)` constraints (default true)
  
 ### Configure Scans
 

@@ -86,6 +86,55 @@ This returns a list of the IOCs identified in the container we scanned.
 
 To get table formatted output omit `--output=json` flag
 
+## Parallel scanning and safe prefiltering
+
+Large images can spend most of their scan time evaluating every YARA rule
+against every file. YaraHunter now profiles the configured rules and splits
+them into independent shards:
+
+```bash
+docker run -i --rm --name=deepfence-yarahunter \
+     -v /var/run/docker.sock:/var/run/docker.sock \
+     -v /tmp:/home/deepfence/output \
+     quay.io/deepfenceio/deepfence_malware_scanner_ce:2.5.8 \
+     --image-name my/image:tag \
+     --rule-shards 4 \
+     --workers-per-scan 16 \
+     --output=json > image-scan.json
+```
+
+* `--rule-shards N` compiles N parallel rule groups. `1` restores the legacy
+  single-ruleset scanner.
+* `--workers-per-scan N` scans up to N files concurrently. The default is the
+  number of logical CPUs. Each concurrent shard scan may buffer a 32 MiB block,
+  so lower this value on memory-constrained hosts.
+* `--prefilter` (default `true`) skips a rule group only when the rules in that
+  group all require a file header, size, or `math.entropy` condition that the
+  file cannot satisfy. Rules with ambiguous conditions are always evaluated.
+  If shard compilation fails, YaraHunter falls back to the legacy ruleset, so
+  existing rule directories remain compatible.
+* `--prefilter-shadow-mode` evaluates every shard while recording which shards
+  the prefilter would have skipped. A skipped shard that still produces a match
+  is reported with a `shadow_misses` counter; production acceptance runs should
+  keep this counter at zero.
+* `--enable-entropy-filter` (default `true`) applies rule-declared
+  `math.entropy(0, filesize)` bounds. Set it to `false` to make those gates fail
+  open.
+
+For a repeatable three-image acceptance run:
+
+```bash
+YARAHUNTER_BIN=./YaraHunter \
+  IMAGES="/path/to/rootfs1 /path/to/rootfs2 /path/to/rootfs3" \
+  RULES_PATH=/path/to/rules \
+  ./itests/acceptance_3_images.sh
+```
+
+The script scans each image in legacy and sharded mode, compares the exact
+`(rule, file, layer)` IOC sets, runs shadow mode, and prints the median wall
+time and speedup for each image. It exits non-zero on any result difference or
+non-zero shadow miss count.
+
 ## Get in touch
 
 Thank you for using YaraHunter.

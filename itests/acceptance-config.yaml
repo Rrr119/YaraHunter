@@ -1,0 +1,7 @@
+# Deliberately empty filters: the acceptance test compares a full scan with the
+# optimized scan over the same set of files.
+exclude_extensions: []
+exclude_paths: []
+exclude_container_paths: []
+max_file_size: 1073741824
+skip_non_executable: false

@@ -1,0 +1,17 @@
+{
+  "root": "/home/dev/feedback/uid43089",
+  "B": "/home/dev/feedback/uid43089",
+  "sha": "7c4477c34c4926cf619516b06a5fd6e26defd453",
+  "wslDistro": "Ubuntu-26.04",
+  "source": {
+    "owner": "deepfence",
+    "repo": "YaraHunter",
+    "sha": "7c4477c34c4926cf619516b06a5fd6e26defd453"
+  },
+  "fork": {
+    "owner": "Rrr119",
+    "repo": "YaraHunter",
+    "cloneUrl": "https://github.com/Rrr119/YaraHunter.git"
+  },
+  "at": "2026-11-27T02:09:26.140Z"
+}

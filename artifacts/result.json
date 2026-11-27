@@ -1,0 +1,18 @@
+{
+  "uid": "43089",
+  "harness": "Codex CLI",
+  "snapshotUrl": "https://github.com/Rrr119/YaraHunter/commit/7c4477c34c4926cf619516b06a5fd6e26defd453",
+  "harnessVersion": "codex-cli 0.167.2",
+  "operatingSystem": "Ubuntu 26.04.1 LTS",
+  "operatingSystemCell": [
+    "MacOS/Linux"
+  ],
+  "outputDirectory": "/home/dev/feedback/uid43089",
+  "wslDistro": "Ubuntu-26.04",
+  "B": {
+    "success": false,
+    "canceled": true,
+    "error": "任务已取消",
+    "side": "B"
+  }
+}

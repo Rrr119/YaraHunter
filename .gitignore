@@ -20,5 +20,6 @@ proto
 vendor/
 
 YaraHunter
+artifacts/acceptance-*/
 
 .DS_Store
